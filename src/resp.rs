@@ -45,31 +45,60 @@ impl Parser {
             return None;
         }
 
-        while let Some(c) = self.tokenizer.next() {
-            if c.is_whitespace() && !is_quoted {
+        while let Some(c) = self.tokenizer.peek() {
+            // TODO: figure out a better way to handle this to try and avoid
+            // the need of doing `self.tokenizer.next()` all the time.
+
+            if c == '\r' {
+                if s.chars().count() > 0 {
+                    break;
+                }
+
+                self.skip(1);
+
+                if self.tokenizer.peek() == Some('\n') {
+                    self.tokenizer.next();
+                    s.push_str("\r\n");
+                    break;
+                }
+            }
+
+            if c == ' ' && !is_quoted {
+                if s.chars().count() > 0 {
+                    break;
+                }
+
+                s.push(c);
+                self.tokenizer.next();
                 break;
             }
 
             if c == '"' && !is_quoted {
                 is_quoted = true;
+                self.tokenizer.next();
                 continue;
             }
 
             if c == '"' && is_quoted {
+                self.tokenizer.next();
                 break;
             }
 
-            if is_quoted && c == '\n' {
-                panic!("Unexpected newline");
-            }
-
             s.push(c);
+            self.tokenizer.next();
         }
 
         Some(s)
     }
 
+    fn skip(&mut self, n: i32) {
+        for _ in 0..n {
+            self.tokenizer.next();
+        }
+    }
+
     pub fn parse(&mut self) -> Vec<String> {
+        let mut token_count = 0;
         let mut tokens = Vec::new();
 
         loop {
@@ -79,7 +108,54 @@ impl Parser {
                 break;
             }
 
-            tokens.push(token.unwrap());
+            if let Some(token) = token {
+                if token.is_empty() {
+                    continue;
+                }
+
+                if token.starts_with("*") {
+                    token_count = token[1..].parse::<i32>().unwrap();
+
+                    // Next character is a newline
+                    // So we skip it
+                    self.skip(2);
+                } else if token.starts_with("$") {
+                    let token_size = token[1..].parse::<i32>().unwrap();
+                    let mut next_token = String::new();
+                    let mut cur_token_size = 0;
+
+                    // Next character is a newline
+                    // So we skip it
+                    self.skip(2);
+
+                    loop {
+                        let token = self.get_next_token();
+                        cur_token_size += token.as_ref().unwrap().chars().count();
+
+                        if cur_token_size as i32 > token_size {
+                            break;
+                        }
+
+                        next_token.push_str(token.unwrap().as_ref());
+                    }
+
+                    tokens.push(next_token);
+                } else {
+                    if token == "\r\n" || token == " " {
+                        continue;
+                    }
+
+                    tokens.push(token);
+                }
+            }
+        }
+
+        if token_count > 0 && tokens.iter().count() as i32 != token_count {
+            panic!(
+                "Expected {} tokens, found {}",
+                token_count,
+                tokens.iter().count()
+            );
         }
 
         tokens
@@ -94,7 +170,7 @@ pub struct SetCommandHandler {}
 
 impl CommandHandler for SetCommandHandler {
     fn handle(&self, db: &mut MemoryDatabase, args: Vec<String>) -> String {
-        if args.len() != 2 {
+        if args.len() < 3 {
             return "-ERR wrong number of arguments for 'set' command".to_string();
         }
 
@@ -108,7 +184,7 @@ impl CommandHandler for SetCommandHandler {
 pub fn dispatch(db: &mut MemoryDatabase, args: Vec<String>) -> String {
     let command = args[0].as_str();
 
-    match command {
+    match command.to_lowercase().as_ref() {
         "set" => SetCommandHandler {}.handle(db, args[1..].to_vec()),
         _ => "-ERR unknown command".to_string(),
     }
