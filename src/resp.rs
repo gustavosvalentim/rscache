@@ -1,204 +1,142 @@
-use crate::database::{MemoryDatabase, Value};
+use std::str::Chars;
 
-#[derive(Debug)]
-pub struct Tokenizer {
-    input: String,
-    position: i32,
+enum Token {
+    String(String),
+    Array(usize),
 }
 
-impl Tokenizer {
-    pub fn new(input: String) -> Tokenizer {
-        Tokenizer { input, position: 0 }
+struct Lexer<'a> {
+    input: Chars<'a>,
+}
+
+impl<'a> Lexer<'a> {
+    pub fn new(input: &'a str) -> Lexer<'a> {
+        Lexer {
+            input: input.chars(),
+        }
     }
 
-    pub fn next(&mut self) -> Option<char> {
-        if self.peek().is_none() {
-            return None;
+    pub fn next(&mut self) -> Option<Token> {
+        enum CurrToken {
+            SimpleString,
+            QuotedString,
+            BulkString,
+            Array,
         }
 
-        let c = self.input.chars().nth(self.position as usize);
-        self.position += 1;
-        c
+        loop {
+            let c = self.input.next()?;
+
+            let curr_token = match c {
+                '*' => CurrToken::Array,
+                '$' => CurrToken::BulkString,
+                'a'..='z' | 'A'..='Z' => CurrToken::SimpleString,
+                '"' => CurrToken::QuotedString,
+                _ => continue,
+            };
+
+            break match curr_token {
+                CurrToken::Array => {
+                    let size = self.read_size();
+
+                    Some(Token::Array(size))
+                }
+                CurrToken::BulkString => {
+                    let size = self.read_size();
+                    let mut s = String::new();
+
+                    for _ in 0..size {
+                        s.push(self.input.next()?);
+                    }
+
+                    Some(Token::String(s))
+                }
+                CurrToken::SimpleString => {
+                    let mut s = String::new();
+
+                    s.push(c);
+
+                    loop {
+                        let c = self.input.next()?;
+
+                        if c.is_whitespace() {
+                            break;
+                        }
+
+                        s.push(c);
+                    }
+
+                    Some(Token::String(s))
+                }
+                CurrToken::QuotedString => {
+                    let mut s = String::new();
+
+                    loop {
+                        let c = self.input.next()?;
+
+                        if c == '"' {
+                            break;
+                        }
+
+                        s.push(c);
+                    }
+
+                    Some(Token::String(s))
+                }
+            };
+        }
     }
 
-    pub fn peek(&self) -> Option<char> {
-        self.input.chars().nth(self.position as usize)
+    fn read_size(&mut self) -> usize {
+        let mut size = String::new();
+
+        while let Some(c) = self.input.next() {
+            if c.is_digit(10) {
+                size.push(c);
+            } else if c == '\r' {
+                let iter = self.input.clone();
+                let mut peekable = iter.peekable();
+
+                if let Some(n) = peekable.peek() {
+                    if *n == '\n' {
+                        self.input.next();
+                        break;
+                    }
+                }
+            }
+        }
+
+        size.parse().unwrap()
     }
 }
 
-pub struct Parser {
-    tokenizer: Tokenizer,
+pub struct Parser<'a> {
+    lexer: Lexer<'a>,
 }
 
-impl Parser {
-    pub fn new(input: String) -> Parser {
+impl<'a> Parser<'a> {
+    pub fn new(input: &'a str) -> Parser<'a> {
         Parser {
-            tokenizer: Tokenizer::new(input),
-        }
-    }
-
-    pub fn get_next_token(&mut self) -> Option<String> {
-        let mut s = String::new();
-        let mut is_quoted = false;
-
-        if self.tokenizer.peek().is_none() {
-            return None;
-        }
-
-        while let Some(c) = self.tokenizer.peek() {
-            // TODO: figure out a better way to handle this to try and avoid
-            // the need of doing `self.tokenizer.next()` all the time.
-
-            if c == '\r' {
-                if s.chars().count() > 0 {
-                    break;
-                }
-
-                self.skip(1);
-
-                if self.tokenizer.peek() == Some('\n') {
-                    self.tokenizer.next();
-                    s.push_str("\r\n");
-                    break;
-                }
-            }
-
-            if c == ' ' && !is_quoted {
-                if s.chars().count() > 0 {
-                    break;
-                }
-
-                s.push(c);
-                self.tokenizer.next();
-                break;
-            }
-
-            if c == '"' && !is_quoted {
-                is_quoted = true;
-                self.tokenizer.next();
-                continue;
-            }
-
-            if c == '"' && is_quoted {
-                self.tokenizer.next();
-                break;
-            }
-
-            s.push(c);
-            self.tokenizer.next();
-        }
-
-        Some(s)
-    }
-
-    fn skip(&mut self, n: i32) {
-        for _ in 0..n {
-            self.tokenizer.next();
+            lexer: Lexer::new(input),
         }
     }
 
     pub fn parse(&mut self) -> Vec<String> {
-        let mut token_count = 0;
         let mut tokens = Vec::new();
 
-        loop {
-            let token = self.get_next_token();
+        while let Some(token) = self.lexer.next() {
+            match token {
+                Token::String(s) => tokens.push(s),
+                Token::Array(size) => {
+                    tokens = self.parse();
 
-            if token.is_none() {
-                break;
-            }
-
-            if let Some(token) = token {
-                if token.is_empty() {
-                    continue;
-                }
-
-                if token.starts_with("*") {
-                    token_count = token[1..].parse::<i32>().unwrap();
-
-                    // Next character is a newline
-                    // So we skip it
-                    self.skip(2);
-                } else if token.starts_with("$") {
-                    let token_size = token[1..].parse::<i32>().unwrap();
-                    let mut next_token = String::new();
-                    let mut cur_token_size = 0;
-
-                    // Next character is a newline
-                    // So we skip it
-                    self.skip(2);
-
-                    loop {
-                        let token = self.get_next_token();
-                        cur_token_size += token.as_ref().unwrap().chars().count();
-
-                        if cur_token_size as i32 > token_size {
-                            break;
-                        }
-
-                        next_token.push_str(token.unwrap().as_ref());
+                    if tokens.iter().count() != size {
+                        panic!("Array size mismatch");
                     }
-
-                    tokens.push(next_token);
-                } else {
-                    if token == "\r\n" || token == " " {
-                        continue;
-                    }
-
-                    tokens.push(token);
                 }
             }
-        }
-
-        if token_count > 0 && tokens.iter().count() as i32 != token_count {
-            panic!(
-                "Expected {} tokens, found {}",
-                token_count,
-                tokens.iter().count()
-            );
         }
 
         tokens
-    }
-}
-
-pub trait CommandHandler {
-    fn handle(&self, db: &mut MemoryDatabase, args: Vec<String>) -> String;
-}
-
-pub struct SetCommandHandler {}
-
-impl CommandHandler for SetCommandHandler {
-    fn handle(&self, db: &mut MemoryDatabase, args: Vec<String>) -> String {
-        if args.len() < 3 {
-            return "-ERR wrong number of arguments for 'set' command".to_string();
-        }
-
-        match db.set(args[0].clone(), Value::String(args[1].clone())) {
-            Ok(_) => "+OK".to_string(),
-            Err(_) => "-ERR an error occurred".to_string(),
-        }
-    }
-}
-
-pub fn dispatch(db: &mut MemoryDatabase, args: Vec<String>) -> String {
-    let command = args[0].as_str();
-
-    match command.to_lowercase().as_ref() {
-        "set" => SetCommandHandler {}.handle(db, args[1..].to_vec()),
-        _ => "-ERR unknown command".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_tokenizer_next() {
-        let mut parser = Parser::new("set key \"string value\"".to_string());
-        let result = parser.parse();
-
-        assert_eq!(result, vec!["set", "key", "string value"]);
     }
 }
