@@ -1,18 +1,16 @@
-use std::str::Chars;
-
 enum Token {
     String(String),
     Array(usize),
 }
 
 struct Lexer<'a> {
-    input: Chars<'a>,
+    input: Box<dyn Iterator<Item = char> + 'a>,
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Lexer<'a> {
-        Lexer {
-            input: input.chars(),
+    pub fn new(input: impl Iterator<Item = char> + 'a) -> Self {
+        Self {
+            input: Box::new(input),
         }
     }
 
@@ -94,10 +92,9 @@ impl<'a> Lexer<'a> {
             if c.is_digit(10) {
                 size.push(c);
             } else if c == '\r' {
-                let iter = self.input.clone();
-                let mut peekable = iter.peekable();
+                let mut iter = self.input.as_mut().peekable();
 
-                if let Some(n) = peekable.peek() {
+                if let Some(n) = iter.peek() {
                     if *n == '\n' {
                         self.input.next();
                         break;
@@ -115,9 +112,9 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(input: &'a str) -> Parser<'a> {
-        Parser {
-            lexer: Lexer::new(input),
+    pub fn new(input: &'a str) -> Self {
+        Self {
+            lexer: Lexer::new(input.chars()),
         }
     }
 
