@@ -1,3 +1,4 @@
+#[derive(PartialEq, Eq)]
 enum Token {
     String(String),
     Array(usize),
@@ -8,9 +9,12 @@ struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(input: impl Iterator<Item = char> + 'a) -> Self {
+    pub fn new<I>(input: I) -> Self
+    where
+        I: IntoIterator<Item = char> + 'a,
+    {
         Self {
-            input: Box::new(input),
+            input: Box::new(input.into_iter()),
         }
     }
 
@@ -44,7 +48,8 @@ impl<'a> Lexer<'a> {
                     let mut s = String::new();
 
                     for _ in 0..size {
-                        s.push(self.input.next()?);
+                        let c = self.input.next()?;
+                        s.push(c);
                     }
 
                     Some(Token::String(s))
@@ -94,9 +99,10 @@ impl<'a> Lexer<'a> {
             } else if c == '\r' {
                 let mut iter = self.input.as_mut().peekable();
 
+                // TODO: Not sure why but this peek is moving the iterator cursor.
+                // Need to find a way to improve this
                 if let Some(n) = iter.peek() {
                     if *n == '\n' {
-                        self.input.next();
                         break;
                     }
                 }
@@ -125,11 +131,13 @@ impl<'a> Parser<'a> {
             match token {
                 Token::String(s) => tokens.push(s),
                 Token::Array(size) => {
-                    tokens = self.parse();
+                    let inner_tokens = self.parse();
 
-                    if tokens.iter().count() != size {
+                    if inner_tokens.iter().count() != size {
                         panic!("Array size mismatch");
                     }
+
+                    inner_tokens.iter().for_each(|t| tokens.push(t.to_string()));
                 }
             }
         }
